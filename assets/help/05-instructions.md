@@ -19,6 +19,14 @@ files, in order:
     [instructions]
     files = AGENTS.md
 
+`[instructions] paths` adds directories whose every `.md` file is read,
+separated by `;`, each absolute or relative to the working directory, so
+a project can share conventions without naming each file. Their files
+come after the named ones and before your own `AGENTS.md`:
+
+    [instructions]
+    paths = ~/src/prospero-instructions
+
 A No folder session gets only your own file, none of a project's.
 
 A running session is told when an instruction file changes, and of

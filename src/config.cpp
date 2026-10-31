@@ -514,6 +514,9 @@ static CfgKey cfgschema[] = {
     {"instructions", "files", CFG_STRING, "AGENTS.md CLAUDE.md", {}, {},
      "instructions", "File names to load from each directory, the first "
      "found in each, separated by blanks"},
+    {"instructions", "paths", CFG_PATHS, "", {}, {}, "instructions",
+     "Directories whose .md files are all read as instructions, absolute "
+     "or ~ paths separated by ;, after the project's and before the user's"},
 
     {"skills", "enabled", CFG_BOOL, "true", {}, {}, "skills",
      "Offer skills: SKILL.md files in .claude/skills, .agents/skills, "

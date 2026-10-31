@@ -3848,8 +3848,9 @@ static void instrlazy(Session *s, Arena scratch, Str path)
         loaded = push(&scratch, loaded, s->instrfiles[i].path);
     }
     Slice<Str>   names = instrlist(s, &scratch);
+    Slice<Str> paths = cfgpaths(e->cfg, &scratch, "instructions", "", "paths", e->home);
     Instructions in    = instrnested(e->os, &scratch, s->guard.cwd, path, names,
-                                     loaded, e->home, s->te.windows);
+                                    loaded, paths, e->home, s->te.windows);
     if (!in.files.len) {
         return;
     }
@@ -14492,8 +14493,9 @@ static void instrstart(Session *s, Arena scratch)
     Str          cwd    = normpath(&scratch, s->cwd, ".", s->te.windows);
     Slice<Str>   names  = instrlist(s, &scratch);
     Str          global = s->projinstr ? Str{} : e->global;
+    Slice<Str>   paths  = cfgpaths(e->cfg, &scratch, "instructions", "", "paths", e->home);
     Instructions in     = instructions(e->os, &scratch, cwd, global, names,
-                                       e->home, s->te.windows);
+                                       paths, e->home, s->te.windows);
     s->instr = in.text.data ? clone(&s->perm, in.text) : Str{(u8 *)"", 0};
     instrstamp(s, in.files, {});
     webnote(s, scratch, s->instr, 0);

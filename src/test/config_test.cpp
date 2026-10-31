@@ -1076,6 +1076,7 @@ static void testcfgjson(Test *t)
         "tools//turn_budget=0*\n"
         "tools//task_budget=200*\n"
         "instructions//files=AGENTS.md CLAUDE.md*\n"
+        "instructions//paths=*\n"
         "skills//enabled=true*\n"
         "skills//paths=*\n"
         "skills//hidden=*\n"
