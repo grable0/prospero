@@ -231,6 +231,12 @@ the first of `AGENTS.md` or `CLAUDE.md` (`[instructions] files`) in
 each directory from the root of the repository down to the working
 directory, and more below it as the agent works there.
 
+Directories listed in `instructions.paths` (separated by `;`, each
+absolute or relative to the working directory) are read as well: each
+is searched for its `.md` files, loaded after the named files and
+before the user's own `AGENTS.md`. This is how a project can share
+conventions without naming each file.
+
 Memory is the agent's own, as Claude Code's auto memory is: for each
 project, below `memory` in the state directory, a `MEMORY.md` index of
 one line per memory, given to each new session in the project, and a

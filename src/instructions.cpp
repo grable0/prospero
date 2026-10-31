@@ -272,10 +272,41 @@ static Str instrcompose(Arena *a, Slice<InstrFile> files, Str global, b32 *cut)
     return s;
 }
 
+// A directory's file entries, whose names end in .md, each once.
+static Slice<Str> instrdirfiles(Os *os, Arena *a, Str dir, b32 win)
+{
+    Slice<Str> r = {};
+    for (Dirent *d = os_list(os, a, dir); d; d = d->next) {
+        Str name = d->name;
+        b32 md = name.len>=3 && name[name.len-1]=='d' &&
+                 name[name.len-2]=='m' && name[name.len-3]=='.';
+        if (md && !d->isdir) {
+            r = push(a, r, normpath(a, dir, name, win));
+        }
+    }
+    return r;
+}
+
+// Every .md file of a directory, loaded as instructions, with the
+// directory as the project bound, each once.
+static void instrdirload(Os *os, Arena *a, Instructions *r, Str dir,
+                         Str importer, Str inside, Str home, i32 hops, b32 win)
+{
+    if (!dir.len) {
+        return;
+    }
+    Slice<Str> files = instrdirfiles(os, a, dir, win);
+    for (iz i = 0; i < files.len; i++) {
+        instrload(os, a, r, files[i], dir, dir, home, hops, win);
+    }
+}
+
 // Gather the instructions for a session in cwd (normalized): global is
-// the user's own file, names the file names to look for.
+// the user's own file, names the file names to look for, and dirs the
+// directories whose .md files are all read as instructions.
 static Instructions instructions(Os *os, Arena *a, Str cwd, Str global,
-                                 Slice<Str> names, Str home, b32 win)
+                                 Slice<Str> names, Slice<Str> dirs,
+                                 Str home, b32 win)
 {
     Instructions r = {};
     if (global.len) {
@@ -284,22 +315,25 @@ static Instructions instructions(Os *os, Arena *a, Str cwd, Str global,
 
     // The directories from the repository root down to cwd
     Str        root = instrroot(os, a, cwd, win);
-    Slice<Str> dirs = {};
+    Slice<Str> walk  = {};
     for (Str d = cwd;;) {
-        dirs = push(a, dirs, d);
+        walk = push(a, walk, d);
         if (d.len <= root.len) break;
         Str up = normpath(a, d, "..", win);
         if (up == d) break;
         d = up;
     }
-    for (iz i = dirs.len-1; i >= 0; i--) {
+    for (iz i = walk.len-1; i >= 0; i--) {
         for (iz k = 0; k < names.len; k++) {
-            Str path = join(a, dirs[i], names[k]);
+            Str path = join(a, walk[i], names[k]);
             if (os_stat(os, *a, path).type == STAT_FILE) {
                 instrload(os, a, &r, path, {}, root, home, 0, win);
                 break;
             }
         }
+    }
+    for (iz i = 0; i < dirs.len; i++) {
+        instrdirload(os, a, &r, dirs[i], {}, {}, home, 0, win);
     }
     if (r.files.len) {
         r.text = instrcompose(a, r.files, global, &r.cut);
@@ -313,7 +347,7 @@ static Instructions instructions(Os *os, Arena *a, Str cwd, Str global,
 // far, which these extend.
 static Instructions instrnested(Os *os, Arena *a, Str cwd, Str path,
                                 Slice<Str> names, Slice<Str> loaded,
-                                Str home, b32 win)
+                                Slice<Str> dirs, Str home, b32 win)
 {
     Instructions r = {};
     Str          root  = instrroot(os, a, cwd, win);
@@ -329,21 +363,24 @@ static Instructions instrnested(Os *os, Arena *a, Str cwd, Str path,
     }
     iz known = r.files.len;
 
-    Slice<Str> dirs = {};
+    Slice<Str> walk = {};
     for (Str d = normpath(a, path, "..", win); d.len>cwd.len && within(cwd, d, win);) {
-        dirs = push(a, dirs, d);
+        walk = push(a, walk, d);
         Str up = normpath(a, d, "..", win);
         if (up == d) break;
         d = up;
     }
-    for (iz i = dirs.len-1; i >= 0; i--) {
+    for (iz i = walk.len-1; i >= 0; i--) {
         for (iz k = 0; k < names.len; k++) {
-            Str file = join(a, dirs[i], names[k]);
+            Str file = join(a, walk[i], names[k]);
             if (os_stat(os, *a, file).type == STAT_FILE) {
                 instrload(os, a, &r, file, {}, root, home, 0, win);
                 break;
             }
         }
+    }
+    for (iz i = 0; i < dirs.len; i++) {
+        instrdirload(os, a, &r, dirs[i], {}, {}, home, 0, win);
     }
     Instructions n = {};
     n.skipped = r.skipped;

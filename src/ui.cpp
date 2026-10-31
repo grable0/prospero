@@ -2596,7 +2596,7 @@ static void drawinfo(Gui *g, GuiSession *s, View *v)
 {
     Arena a  = g->frame;
     f32   sc = g->scale;
-    ImGui::PushTextWrapPos(560*sc);
+    ImGui::PushTextWrapPos(720*sc);
     if (ImGui::BeginTable("##info", 2, ImGuiTableFlags_SizingFixedFit)) {
         inforow("Session", s->sid);
         inforow("Title", sesstitle(s));
@@ -2647,13 +2647,10 @@ static void drawinfo(Gui *g, GuiSession *s, View *v)
         ViewInstr *in = &v->instr[i];
         Buf b(&a, 256);
         print(&b, bytesize(&a, in->bytes));
-        print(&b, in->why=="nested"  ? Str(", for a directory the agent worked in") :
-                  in->why=="changed" ? Str(", changed since the session began") :
+        print(&b, in->why=="changed" ? Str(", changed since the session began") :
+                  in->why=="nested"  && in->importer.len ? Str(", added after the session began") :
+                  in->why=="nested"  ? Str(", for a directory the agent worked in") :
                   Str(", from the start"));
-        if (in->importer.len) {
-            print(&b, ", imported by ");
-            print(&b, showpath(v, in->importer));
-        }
         ImGui::Bullet();
         text(showpath(v, in->path));
         ImGui::SameLine();
@@ -2670,6 +2667,12 @@ static void drawinfo(Gui *g, GuiSession *s, View *v)
         itemnamed(g, "instructions copy");
         itemtip("Copy what the agent was given: these files' text, as its "
                               "system prompt has it");
+    }
+    if (v->instr.len) {
+        i64 total = 0;
+        for (iz i = 0; i < v->instr.len; i++) total += v->instr[i].bytes;
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s total", cstr0(&a, bytesize(&a, total)));
     }
 
     // Skills, as its engine last listed them: /name invokes one

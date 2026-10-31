@@ -59,9 +59,10 @@ static void test_instructions(Test *t)
     os_write(os, *a, "/r/sub/CLAUDE.md", "sub rules\n");
     os_write(os, *a, "/r/sub/deeper/AGENTS.md", "deeper rules\n");
     Slice<Str> names = instrnames(a, "AGENTS.md CLAUDE.md");
+    Slice<Str> npaths = {};
 
     {
-        Instructions in = instructions(os, a, "/r/sub", "/g/AGENTS.md", names, "", 0);
+        Instructions in = instructions(os, a, "/r/sub", "/g/AGENTS.md", names, npaths, "", 0);
         expect(t, "instr files", instrfiles(a, in.files),
                "/g/AGENTS.md /r/docs/no.md</g/AGENTS.md /r/AGENTS.md "
                "/r/docs/a.md</r/AGENTS.md /r/docs/b.md</r/docs/a.md /r/sub/CLAUDE.md");
@@ -78,9 +79,9 @@ static void test_instructions(Test *t)
                "## /r/docs/b.md (imported by /r/docs/a.md)\n\ndoc B")>=0), "1");
 
         // Without a repository, only the working directory itself
-        Instructions bare = instructions(os, a, "/g", {}, names, "", 0);
+        Instructions bare = instructions(os, a, "/g", {}, names, npaths, "", 0);
         expect(t, "instr no repository", instrfiles(a, bare.files), "/g/AGENTS.md");
-        Instructions none = instructions(os, a, "/r/docs", {}, instrnames(a, "README"), "", 0);
+        Instructions none = instructions(os, a, "/r/docs", {}, instrnames(a, "README"), npaths, "", 0);
         expect(t, "instr none", istr(a, none.files.len + none.text.len), "0");
     }
 
@@ -88,12 +89,12 @@ static void test_instructions(Test *t)
         Slice<Str> loaded = {};
         loaded = push(a, loaded, Str("/r/AGENTS.md"));
         loaded = push(a, loaded, Str("/r/sub/CLAUDE.md"));
-        Instructions n = instrnested(os, a, "/r", "/r/sub/deeper/x.c", names, loaded, "", 0);
+        Instructions n = instrnested(os, a, "/r", "/r/sub/deeper/x.c", names, loaded, npaths, "", 0);
         expect(t, "nested", instrfiles(a, n.files), "/r/sub/deeper/AGENTS.md");
         expect(t, "nested text", istr(a, find(n.text, "deeper rules")>=0), "1");
-        n = instrnested(os, a, "/r", "/r/docs/a.md", names, loaded, "", 0);
+        n = instrnested(os, a, "/r", "/r/docs/a.md", names, loaded, npaths, "", 0);
         expect(t, "nested none", istr(a, n.files.len), "0");
-        n = instrnested(os, a, "/r/sub", "/r/x.c", names, loaded, "", 0);
+        n = instrnested(os, a, "/r/sub", "/r/x.c", names, loaded, npaths, "", 0);
         expect(t, "nested outside", istr(a, n.files.len), "0");
 
         // Not from another session's worktree, but in its own
@@ -102,12 +103,12 @@ static void test_instructions(Test *t)
         os_mkdirs(os, *a, "/r/.prospero/worktrees/x");
         os_write(os, *a, "/r/.prospero/worktrees/x/AGENTS.md", "tree rules\n");
         os_write(os, *a, "/r/.prospero/worktrees/x/.git", "gitdir: /r/.git/worktrees/x\n");
-        n = instrnested(os, a, "/r", "/r/.prospero/worktrees/x/sub/f.c", names, loaded, "", 0);
+        n = instrnested(os, a, "/r", "/r/.prospero/worktrees/x/sub/f.c", names, loaded, npaths, "", 0);
         expect(t, "nested not in a worktree", istr(a, n.files.len), "0");
         os_mkdirs(os, *a, "/r/.prospero/worktrees/x/sub");
         os_write(os, *a, "/r/.prospero/worktrees/x/sub/AGENTS.md", "sub tree rules\n");
         n = instrnested(os, a, "/r/.prospero/worktrees/x", "/r/.prospero/worktrees/x/sub/f.c",
-                        names, {}, "", 0);
+                        names, {}, npaths, "", 0);
         expect(t, "nested in its own worktree", instrfiles(a, n.files),
                "/r/.prospero/worktrees/x/sub/AGENTS.md");
     }
@@ -129,7 +130,7 @@ static void test_instructions(Test *t)
             os_write(os, *a, finish(&p), finish(&d));
         }
         os_write(os, *a, "/c/AGENTS.md", "@0.md\n");
-        Instructions in = instructions(os, a, "/c", {}, names, "", 0);
+        Instructions in = instructions(os, a, "/c", {}, names, npaths, "", 0);
         expect(t, "hops", istr(a, in.files.len), "6");
     }
 
@@ -141,8 +142,28 @@ static void test_instructions(Test *t)
             print(&b, "a line of instructions that goes on for a while\n");
         }
         os_write(os, *a, "/big/AGENTS.md", finish(&b));
-        Instructions in = instructions(os, a, "/big", {}, names, "", 0);
+        Instructions in = instructions(os, a, "/big", {}, names, npaths, "", 0);
         expect(t, "cap", istr(a, in.cut && in.text.len<INSTR_MAX+200 &&
                endswith(in.text, " more bytes were not loaded.]")), "1");
+
+    // From configured directories, every .md file is read, non-.md
+    // skipped, as their own instructions.
+    {
+        os_mkdirs(os, *a, "/md");
+        os_write(os, *a, "/md/README.md", "readme\n");
+        os_write(os, *a, "/md/a.md", "alpha\n");
+        os_write(os, *a, "/md/b.md", "beta\n");
+        os_write(os, *a, "/md/notes.txt", "skipped\n");
+        Str        dir[] = {"/md"};
+        Slice<Str> paths = {dir, 1, 1};
+        Instructions in = instructions(os, a, "/md", {}, names, paths, "", 0);
+        expect(t, "paths files", instrfiles(a, in.files),
+               "/md/README.md</md /md/a.md</md /md/b.md</md");
+        b32 ok = find(in.text, "readme")>=0 &&
+                 find(in.text, "alpha")>=0 &&
+                 find(in.text, "beta")>=0 &&
+                 find(in.text, "skipped")<0;
+        expect(t, "paths text", istr(a, ok), "1");
+    }
     }
 }
