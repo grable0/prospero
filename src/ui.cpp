@@ -4769,6 +4769,10 @@ static void drawtranscript(Gui *g)
         if (ImGui::MenuItem("Copy Message", 0, false, onmsg)) {
             copymessage(g, g->menumsg);
         }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Fold Message", 0, false, onmsg)) {
+            togglemsg(g->view, g->menumsg);
+        }
         b32 forked = forkitem(g, onmsg ? &v->msgs[g->menumsg] : 0);
         sideitem(g, v, !forked);
         endtextmenu(g, v);
