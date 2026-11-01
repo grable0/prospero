@@ -7586,7 +7586,7 @@ static TermPlan termplan(Gui *g, Arena *a, GuiSession *s, Str distro = {})
         // Here, the session's own shell, if any but the default
         r.dir = dir;
         if (v) {
-            cmd = termshell(a, v->shellkind, v->shellpath, HOST_WINDOWS, distro);
+            cmd = termshell(a, v->shellkind, v->shellpath, HOST_WINDOWS, distro, dir);
         }
     }
     r.cmd = cmd;

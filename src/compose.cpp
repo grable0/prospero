@@ -1027,8 +1027,11 @@ static Slice<Str> termwsl(Arena *a, Str wsl, Str distro, Str dir)
 // its kind (tools.cpp shellkinds) and program: a POSIX sh as a login
 // shell, so its profile sets it up; wsl in its section's distro, if
 // any. None for a POSIX system's bash or /bin/sh, the defaults, where
-// the terminal's own shell, the user's, is better.
-static Slice<Str> termshell(Arena *a, Str kind, Str path, b32 win, Str distro = {})
+// the terminal's own shell, the user's, is better. On Windows the shell
+// is launched in the session's folder via CreateProcess's reserved dir,
+// but a login shell (sh -l, the default here) ignores it and always lands
+// in the user profile, so we -d the folder in to force the cd.
+static Slice<Str> termshell(Arena *a, Str kind, Str path, b32 win, Str distro = {}, Str dir = {})
 {
     Slice<Str> r = {};
     b32 dflt = !win && kind=="sh" && (path=="/bin/sh" || basename(path)=="bash");
@@ -1038,9 +1041,17 @@ static Slice<Str> termshell(Arena *a, Str kind, Str path, b32 win, Str distro = 
     r = push(a, r, path);
     if (kind == "sh") {
         r = push(a, r, Str("-l"));
+        if (win && dir.len) {
+            r = push(a, r, Str("-d"));
+            r = push(a, r, dir);
+        }
     } else if (kind == "busybox") {
         r = push(a, r, Str("sh"));
         r = push(a, r, Str("-l"));
+        if (win && dir.len) {
+            r = push(a, r, Str("-d"));
+            r = push(a, r, dir);
+        }
     } else if (kind=="pwsh" || kind=="powershell") {
         r = push(a, r, Str("-NoLogo"));
     } else if (kind=="wsl" && distro.len) {

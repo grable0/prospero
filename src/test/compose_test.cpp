@@ -391,8 +391,14 @@ static void test_compose(Test *t)
     expect(t, "term.noshell", argstr(&a, termshell(&a, "sh", {}, 1)), "");
     expect(t, "term.w64sh", argstr(&a, termshell(&a, "sh", "C:/w64devkit/bin/sh.exe", 1)),
            "C:/w64devkit/bin/sh.exe|-l");
+    // On Windows the login shell ignores the CreateProcess reserved dir and
+    // always lands in the profile home, so we -d the folder in to force it
+    expect(t, "term.w64shdir", argstr(&a, termshell(&a, "sh", "C:/w64devkit/bin/sh.exe", 1, {}, "C:/sess")),
+           "C:/w64devkit/bin/sh.exe|-l|-d|C:/sess");
     expect(t, "term.busybox", argstr(&a, termshell(&a, "busybox", "C:/bb/busybox.exe", 1)),
            "C:/bb/busybox.exe|sh|-l");
+    expect(t, "term.busyboxdir", argstr(&a, termshell(&a, "busybox", "C:/bb/busybox.exe", 1, {}, "C:/sess")),
+           "C:/bb/busybox.exe|sh|-l|-d|C:/sess");
     expect(t, "term.pwsh", argstr(&a, termshell(&a, "pwsh", "C:/ps/pwsh.exe", 1)),
            "C:/ps/pwsh.exe|-NoLogo");
     expect(t, "term.cmd", argstr(&a, termshell(&a, "cmd", "C:\\W\\cmd.exe", 1)),
