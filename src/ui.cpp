@@ -4773,6 +4773,29 @@ static void drawtranscript(Gui *g)
         if (ImGui::MenuItem("Fold Message", 0, false, onmsg)) {
             togglemsg(g->view, g->menumsg);
         }
+        // Rewind this prompt's turn from the menu: same conditions, disabled
+        // state and rewind as the header's ###rewind button (drawaction case
+        // ACT_REWIND), reusing its own action so both stay in sync.
+        ViewMsg *m = onmsg ? &v->msgs[g->menumsg] : 0;
+        MsgAction act = msgaction(g, g->sess, v, m);
+        if (m && act.kind==ACT_REWIND) {
+            if (ImGui::MenuItem("Rewind Message", 0, false, !act.why.len)) {
+                askrewind(g, g->sess, {}, m->startsturn, 0, act.cut);
+            }
+            // Tooltip like the button: why while disabled, else what it does
+            Arena a = g->frame;
+            if (act.why.len) {
+                whytip(concat(&a, "Rewind to here: not now. ", act.why));
+            } else {
+                ImGui::SetItemTooltip(act.cut ?
+                    "Rewind to here: take the conversation back to just before this "
+                    "prompt, which goes back to the prompt box to edit, and if you "
+                    "choose, put back the files write and edit changed from here on"
+                    :
+                    "Rewind to here: put back every file write and edit changed from "
+                    "this turn on (the conversation cannot go back past the latest compaction)");
+            }
+        }
         b32 forked = forkitem(g, onmsg ? &v->msgs[g->menumsg] : 0);
         sideitem(g, v, !forked);
         endtextmenu(g, v);
