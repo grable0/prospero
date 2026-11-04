@@ -5304,12 +5304,15 @@ static void drawstrip(Gui *g)
         print(&b, (i64)(frac*100));
         putbyte(&b, '%');
         Str pct = finish(&b);
-        StripItem *it = stripadd(&st, concat(&a, "reading the prompt ", pct),
-                                 concat(&a, "prompt ", pct));
+        StripItem *it = stripadd(&st, concat(&a, " reading the prompt ", pct),
+                                 concat(&a, " prompt ", pct));
         if (it) {
             it->bar    = frac;
-            it->barw   = 160*sc;
-            it->briefw = 100*sc;
+            // Size each bar to its own label so a large font never clips:
+            // the full form is nudged right by a leading space (its center),
+            // and both widths follow the text they render.
+            it->barw   = ImGui::CalcTextSize(cstr0(&a, it->text)).x + 4*sc;
+            it->briefw = ImGui::CalcTextSize(cstr0(&a, it->brief)).x + 4*sc;
         }
         if (v->ptps > 0) {
             // Its rate, as the output's, tokens computed with the cache's
