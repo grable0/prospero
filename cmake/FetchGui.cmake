@@ -133,12 +133,30 @@ file(COPY_FILE ${imgui_draw_patched}.new ${imgui_draw_patched} ONLY_IF_DIFFERENT
 file(REMOVE ${imgui_draw_patched}.new)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${IMGUI}/imgui_draw.cpp)
 
+# Literal TAB characters are silently dropped when pasted into text boxes,
+# this patch allows them verbatim when pasted from clipboard regardless of 
+# ImGuiInputTextFlags_AllowTabInput flag.
+# Patches imgui_widgets.cpp the same way as the block above.
+set(imgui_tab_anchor "        pass |= (c == '\\t') && (flags & ImGuiInputTextFlags_AllowTabInput) != 0;")
+file(READ ${IMGUI}/imgui_widgets.cpp imgui_widgets_text)
+string(FIND "${imgui_widgets_text}" "${imgui_tab_anchor}" imgui_tab_at)
+if(imgui_tab_at LESS 0)
+  message(FATAL_ERROR "imgui_widgets.cpp: the tab-input line has changed; update the patch in FetchGui.cmake")
+endif()
+string(REPLACE "${imgui_tab_anchor}" "        pass |= (c == '\\t') && (((flags & ImGuiInputTextFlags_AllowTabInput) != 0) || input_source_is_clipboard);"
+       imgui_widgets_text "${imgui_widgets_text}")
+set(imgui_widgets_patched ${CMAKE_CURRENT_BINARY_DIR}/imgui-patched/imgui_widgets.cpp)
+file(WRITE ${imgui_widgets_patched}.new "${imgui_widgets_text}")
+file(COPY_FILE ${imgui_widgets_patched}.new ${imgui_widgets_patched} ONLY_IF_DIFFERENT)
+file(REMOVE ${imgui_widgets_patched}.new)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${IMGUI}/imgui_widgets.cpp)
+
 add_library(imgui STATIC
   ${IMGUI}/imgui.cpp
   ${IMGUI}/imgui_demo.cpp
   ${imgui_draw_patched}
   ${IMGUI}/imgui_tables.cpp
-  ${IMGUI}/imgui_widgets.cpp
+  ${imgui_widgets_patched}
   ${IMGUI}/misc/freetype/imgui_freetype.cpp
 )
 target_include_directories(imgui SYSTEM PUBLIC ${IMGUI} ${IMGUI}/backends)
