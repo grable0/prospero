@@ -2290,6 +2290,7 @@ static Str opensession(Session *, Arena);
 static void logsession(Session *, Arena);
 static void instrlogstart(Session *, Arena);
 static void settitle(Session *, Arena, Str, Str);
+static Str newscratch(Engine *, Arena *, Arena, Str);
 
 // Subagents on other hosts (hostlink.cpp)
 static b32  farstart(Session *, Arena, iz, Args *, TaskRun *);
@@ -13407,15 +13408,41 @@ static Session *newhandoffsess(Session *s, Engine *e, Arena scratch) {
     if (!n) {
         return 0;
     }
-    n->cwd   = clone(&n->perm, s->cwd);
-    n->model = clone(&n->perm, s->model);
-    n->ep    = s->ep;
+    n->cwd      = clone(&n->perm, s->cwd);
+    n->model    = clone(&n->perm, s->model);
+    n->attended = s->attended;
+    n->ep       = s->ep;
+    n->ep.name  = clone(&n->perm, s->ep.name);
+    n->ep.url   = clone(&n->perm, s->ep.url);
+    n->ep.relay = clone(&n->perm, s->ep.relay);
+    n->ep.key   = clone(&n->perm, s->ep.key);
     n->ep.firstbyte = 0;
     n->ep.idle      = 0;
     n->ep.progress  = 0;
-    n->role    = s->role;
-    n->mc      = s->mc;
-    n->te      = s->te;
+    n->role   = clone(&n->perm, s->role);
+    n->rolepr = clone(&n->perm, s->rolepr);
+    n->mc     = s->mc;
+    n->mc.name      = clone(&n->perm, s->mc.name);
+    n->mc.reasoning = clone(&n->perm, s->mc.reasoning);
+    n->mc.kwargs    = clone(&n->perm, s->mc.kwargs);
+    n->mc.effort    = clone(&n->perm, s->mc.effort);
+    n->mc.extras    = {};
+    for (iz i = 0; i < s->mc.extras.len; i++) {
+        Extra x = {s->mc.extras[i].key, s->mc.extras[i].json};
+        x.key   = clone(&n->perm, x.key);
+        x.json  = clone(&n->perm, x.json);
+        n->mc.extras = push(&n->perm, n->mc.extras, x);
+    }
+    n->te         = s->te;
+    n->mcpfilter  = clone(&n->perm, s->mcpfilter);
+    n->stepmax    = s->stepmax;
+    n->projinstr  = s->projinstr;
+    n->nofallback = s->nofallback;
+    n->tempask    = s->tempask;
+    n->nofolder   = s->nofolder;
+    for (iz i = 0; i < s->roots.len; i++) {
+        n->roots = push(&n->perm, n->roots, clone(&n->perm, s->roots[i]));
+    }
     n->grants.len = 0;
     for (iz i = 0; i < s->grants.len; i++) {
         n->grants = push(&n->perm, n->grants, grantclone(&n->perm, s->grants[i]));
@@ -13426,10 +13453,19 @@ static Session *newhandoffsess(Session *s, Engine *e, Arena scratch) {
         dropsession(e, n);
         return 0;
     }
+    if (n->nofolder) {
+        Str work = join(&scratch, n->dir, "work");
+        Str real = os_mkdirs(e->os, scratch, work) ? os_realpath(e->os, &scratch, work) : Str{};
+        if (real.len) {
+            n->cwd = clone(&n->perm, real);
+        }
+    }
+    n->scratch = newscratch(e, &n->perm, scratch, n->sid);
     sessionready(n, scratch);
     logsession(n, scratch);
     instrlogstart(n, scratch);
     memlogstart(n, scratch);
+    logprefix(n, scratch);
     return n;
 }
 
@@ -13501,7 +13537,7 @@ static void askhandoff(Engine *e, Arena scratch, i64 id, Str sid) {
     Buf   b(&scratch, 512);
     EvOut w = evbegin(&b, sid.len ? sid : Str{}, 0, os_time(e->os), EV_REPLY);
     putintkey(&w.json, "id", id);
-    putintkey(&w.json, "ok", 0);
+    putintkey(&w.json, "ok", 1);
     putstrkey(&w.json, "question",
               "The summarizer found nothing to hand off. What did it find, or "
               "what new work might be worth taking up: a feature to build, a "
@@ -13510,9 +13546,11 @@ static void askhandoff(Engine *e, Arena scratch, i64 id, Str sid) {
 }
 
 // /handoff: summarize what comes next for a fresh session. A plan handoff
-// copies only the plan into one, in plan mode, with no summarizing turn. No
-// reply here: the summary (or nothing) reaches the GUI once the new session
-// is ready, matched to this command by the id of the request.
+// copies only the plan into one, in plan mode, with no summarizing turn; its
+// reply takes the new session with it, and its first turn then asks to approve
+// the plan it was handed. Otherwise no reply here: the summary reaches the GUI
+// once the new session is ready, matched to this command by the id of the
+// request.
 static void cmdhandoff(Engine *e, Session *s, Arena scratch, i64 id, Json *j) {
     Str focus = trim(jsonstr(jsonget(j, "focus")));
     if (busy(s) || s->intask) {
@@ -13525,10 +13563,9 @@ static void cmdhandoff(Engine *e, Session *s, Arena scratch, i64 id, Json *j) {
 
     if (focus.len && focus=="plan") {
         // A plan handoff: carry the plan into a fresh session, in plan mode so
-        // its approval ask shows when it runs. No turn of its own; the reply
-        // takes the new session with it. The plan is already written, so once
-        // it runs it asks to approve that existing plan (plancall), and only
-        // then does any work.
+        // its approval ask shows when it runs. The reply takes the new session
+        // with it; its first turn then asks to approve the plan it was handed
+        // (plancall), and only after that does any work.
         Session *n = newhandoffsess(s, e, scratch);
         if (!n) {
             reply(e, scratch, id, 0, "cannot start the handoff: out of memory", s->sid);
@@ -13539,8 +13576,10 @@ static void cmdhandoff(Engine *e, Session *s, Arena scratch, i64 id, Json *j) {
         // Carry the source's existing plan into it, so that fresh session asks
         // to approve that one rather than writing a new plan. Only if there is
         // one (readplan leaves .err set when the file is missing or empty).
-        PlanText sp = readplan(s, &scratch);
+        b32      carried = 0;
+        PlanText sp      = readplan(s, &scratch);
         if (!sp.err.data && os_write(e->os, scratch, n->planfile, sp.text)) {
+            carried = 1;
             note(s, scratch, "info", "carried the plan into the handoff session");
             // Say a plan is already there so its first turn approves it (via
             // exit_plan_mode, which asks for approval) instead of writing a new
@@ -13562,6 +13601,9 @@ static void cmdhandoff(Engine *e, Session *s, Arena scratch, i64 id, Json *j) {
         putintkey(&w.json, "ok", 1);
         putstrkey(&w.json, "sid", n->sid);
         emit(e, evend(&w));
+        if (carried) {
+            beginturn(n, scratch, "handoff");
+        }
         return;
     }
 

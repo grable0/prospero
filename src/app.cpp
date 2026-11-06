@@ -5389,6 +5389,7 @@ static void onsesscmd(Gui *g, GuiHost *h, Arena scratch, Request *q, EvRec *r)
             guiselect(g, f);
             setnote(g, f, note, 1);
             guilist(g, h);
+            break;
         } else if (!validsid(sid) || sid==s->sid) {
             setnote(g, s, "handoff", 0);
             guilist(g, h);
@@ -5718,6 +5719,7 @@ static void onreply(Gui *g, GuiHost *h, Arena scratch, EvRec *r, Str line)
     case CMD_MODE:
     case CMD_SHELL:
     case CMD_FORK:
+    case CMD_HANDOFF:
     case CMD_BACKGROUND:
     case CMD_CALLSTOP:
         onsesscmd(g, h, scratch, &q, r);
