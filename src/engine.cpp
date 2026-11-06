@@ -220,6 +220,7 @@ static_assert(countof(nudgeinfo) == N_COUNT);
 enum : i32 {
     REQ_CHAT,     // what a request is for: a step of the turn
     REQ_COMPACT,  // a summary of older messages
+    REQ_HANDOFF,  // a handoff summary, to carry forward to a new session
 };
 
 enum : i32 {
@@ -747,6 +748,8 @@ struct Session {
     Compact      cp;         // with REQ_COMPACT
     b32          compactnext;  // the turn compacts, as asked (compact)
     Str          cpfocus;    // and what to keep of it
+    b32          handoffnext; // the turn hands off next work to a new session
+    i64          handoffid;   // the request id to reply with, when that new session is made
     i64          ctxhint;    // the window as the log last gave it, shown
                              // until discovery tells (gauge)
     i32          overflows;  // this step's prompts rejected as too long
@@ -2268,6 +2271,7 @@ static void finalize(Session *, Arena);
 static void nexttool(Session *, Arena);
 static void sendcompact(Session *, Arena);
 static void compact(Session *, Arena, i64 enough, i64 goal, i32 why);
+static Str  handoffask(Arena *, Session *);
 static void beginturn(Session *, Arena, Str via);
 static void turnready(Session *, Arena);
 static b32  busy(Session *);
@@ -2277,6 +2281,15 @@ static void starttasks(Session *, Arena);
 static b32  taskasks(Session *, Arena);
 static void taskanswered(Session *, b32, i32, Str, i64);
 static void taskcancel(Session *, Arena);
+// A handoff's new session and its summary (handoff.cpp)
+static Session *newsession(Engine *, Arena, Str);
+static void dropsession(Engine *, Session *);
+static void sessionready(Session *, Arena);
+static Str freshsid(Engine *, Arena *);
+static Str opensession(Session *, Arena);
+static void logsession(Session *, Arena);
+static void instrlogstart(Session *, Arena);
+static void settitle(Session *, Arena, Str, Str);
 
 // Subagents on other hosts (hostlink.cpp)
 static b32  farstart(Session *, Arena, iz, Args *, TaskRun *);
@@ -2337,7 +2350,7 @@ static void mcpprojtrust(Session *, Arena, Str server);
 static void mcpprojresolve(Session *, Arena, b32 allow, i32 by, b32 always);
 static void apprresolve(Session *, Arena, b32 allow, i32 by);
 static Str  deskdenial(Arena *, i32 by, Str note, i64 wait);
-static Slice<Msg> deskimages(Session *, Arena *);
+static Slice<Msg> deskimages(Session *, Arena *, iz max);
 static void toolsessions(Session *, Arena);
 static void toolmessage(Session *, Arena, Args *);
 static b32  validimage(Str name);
@@ -2396,7 +2409,7 @@ static void sendchat(Session *s, Arena scratch)
     req.mc        = &s->mc;
     req.system    = s->system;
     req.tools     = s->tools;
-    req.history   = deskimages(s, &scratch);
+    req.history   = deskimages(s, &scratch, 0);  // all of it, for the reply
     req.thinkfrom = s->thinkfrom;
     req.cachekey  = s->sid;
     i32 wire      = s->ep.wire;
@@ -2417,10 +2430,89 @@ static void sendchat(Session *s, Arena scratch)
     setstate(s, S_HEAD);
 }
 
+// The handoff's one request: a chat call, like sendchat's, but told of its
+// work first. The system prompt keeps the conversation as context, and this
+// tells it to summarize what comes next instead of continuing it, focused on
+// The focus if any. It leaves the summary for handoffed, not in this turn.
+enum : iz {
+    HANDOFF_RECENT = 24,   // messages the summarizer skims: only the latest,
+                           // not the whole log (see deskimages and handoffask)
+};
+
+static void sendhandoff(Session *s, Arena scratch) {
+    Engine *e = s->e;
+    s->attempts++;
+    {
+        Arena a = scratch;
+        Buf   b(&a, 256 + s->ep.url.len + s->model.len);
+        EvOut w = sbegin(s, &b, EV_ATTEMPT);
+        putintkey(&w.json, "turn", s->turn);
+        putintkey(&w.json, "n", s->attempts);
+        putstrkey(&w.json, "endpoint", s->ep.url);
+        putstrkey(&w.json, "model", s->model);
+        ssend(s, &w);
+    }
+    newattempt(s);
+
+    // The body goes into the attempt arena, temporaries into scratch. The
+    // system keeps the conversation's context, and this tells it to hand off
+    // what comes next rather than answer on.
+    // Only the latest messages and their outputs: not the whole log, which
+    // is for the reply's own context. The summarizer skims these to find what
+    // comes next (handoffask).
+    iz          recent = HANDOFF_RECENT;
+    ChatReq req      = {};
+    req.mc        = &s->mc;
+    req.tools     = s->tools;
+    req.history   = deskimages(s, &scratch, recent);
+    req.thinkfrom = s->thinkfrom;
+    b32 an        = s->ep.kind == EP_ANTHROPIC;
+    {
+        Arena a = scratch;
+        Buf   b(&a, 4096 + s->system.len + s->cpfocus.len*2);
+        print(&b, s->system);
+        print(&b, handoffask(&scratch, s));
+        Str sys = finish(&b);
+        req.system = clone(&s->attempt, sys);
+    }
+    Str body      = an ? anencode(&s->attempt, scratch, &req)
+                       : encodechat(&s->attempt, scratch, &req);
+    Str url       = apiurl(&scratch, s->ep.url, an ? Str("messages")
+                                                   : Str("chat/completions"));
+
+    if (!startreq(s, scratch, &s->ep, "POST", url, body, "text/event-stream", 0, 1)) {
+        Str err = os_lasterr(e->os, &scratch);
+        err = s->ep.held ? epheldmsg(&scratch, &s->ep)
+                         : concat(&scratch, "cannot start a request: ", err);
+        endturn(s, scratch, "error", err);
+        return;
+    }
+    arm(s, T_FIRSTBYTE, s->ep.firstbyte);
+    setstate(s, S_HEAD);
+}
+
+// The handoff's instruction, appended to the system prompt: what to do with
+// the conversation now. Empty focus means all of it; a focus narrows it.
+static Str handoffask(Arena *a, Session *s) {
+    Buf b(a, 512 + s->cpfocus.len*2);
+    print(&b, "You are finding what work needs to be done next, so a");
+    print(&b, " fresh session can pick it up. Skim the latest messages and");
+    print(&b, " their outputs below — not the whole history, only the recent ones —");
+    print(&b, " and say only what comes next and why, in order; keep it tight.");
+    if (s->cpfocus.len) {
+        print(&b, "\n\nFocus on: ");
+        print(&b, s->cpfocus);
+        print(&b, '\n');
+    }
+    return finish(&b);
+}
+
 static void sendreq(Session *s, Arena scratch)
 {
     if (s->purpose == REQ_COMPACT) {
         sendcompact(s, scratch);
+    } else if (s->purpose == REQ_HANDOFF) {
+        sendhandoff(s, scratch);
     } else {
         sendchat(s, scratch);
     }
@@ -2478,6 +2570,13 @@ static void proceed(Session *s, Arena scratch)
         if (relaygate(s, scratch, &s->ep) && authgate(s, scratch, &s->ep)) {
             discover(s, scratch);
         }
+        return;
+    }
+    if (s->purpose==REQ_HANDOFF && s->handoffnext) {
+        // A turn of its own (handoff): summarize what comes next for a fresh
+        // session. The summary goes to that session's input box, not here.
+        s->handoffnext = 0;
+        sendhandoff(s, scratch);
         return;
     }
     if (s->purpose==REQ_CHAT && s->compactnext) {
@@ -6846,7 +6945,7 @@ static Str sessrefstext(Arena *a, Slice<MsgSess> refs)
 // the images attached, each read in, or a note if its file is lost; and
 // the text files attached, as text before their message's own.
 // The history itself if it has none of them.
-static Slice<Msg> deskimages(Session *s, Arena *a)
+static Slice<Msg> deskimages(Session *s, Arena *a, iz max)
 {
     Engine *e   = s->e;
     b32     any = 0;
@@ -6859,10 +6958,12 @@ static Slice<Msg> deskimages(Session *s, Arena *a)
     }
     DeskDrop   d = deskdrop(s);
     Slice<Msg> h = {};
-    h.data = alloc<Msg>(a, s->history.len);
-    h.len  = h.cap = s->history.len;
+    iz          from = max ? (s->history.len < max ? 0 : s->history.len - max) : 0;
+    i64         kept = s->history.len - from;
+    h.data = alloc<Msg>(a, kept);
+    h.len  = h.cap = (iz)kept;
     i64 n  = 0;
-    for (iz i = 0; i < s->history.len; i++) {
+    for (iz i = from; i < s->history.len; i++) {
         Msg m = s->history[i];
         if (m.image.len) {
             m.floor = n==d.read ? FLOOR_READ : n==d.write ? FLOOR_WRITE : FLOOR_NONE;
@@ -13295,6 +13396,183 @@ static void compacted(Session *s, Arena scratch, Partial *p)
     proceed(s, scratch);
 }
 
+// A fresh top-level session carrying everything from s except its log: the
+// same folder, model (mc), endpoint, role, tool environment (te: the shell's
+// commands and the tools' denials) and grants ("always allow"), with its
+// instructions, memory and skills read anew from that workspace. For a plan
+// handoff it is also put into plan mode. Returns it, or null if none could be
+// made.
+static Session *newhandoffsess(Session *s, Engine *e, Arena scratch) {
+    Session *n = newsession(e, scratch, freshsid(e, &scratch));
+    if (!n) {
+        return 0;
+    }
+    n->cwd   = clone(&n->perm, s->cwd);
+    n->model = clone(&n->perm, s->model);
+    n->ep    = s->ep;
+    n->ep.firstbyte = 0;
+    n->ep.idle      = 0;
+    n->ep.progress  = 0;
+    n->role    = s->role;
+    n->mc      = s->mc;
+    n->te      = s->te;
+    n->grants.len = 0;
+    for (iz i = 0; i < s->grants.len; i++) {
+        n->grants = push(&n->perm, n->grants, grantclone(&n->perm, s->grants[i]));
+    }
+
+    Str why = opensession(n, scratch);
+    if (why.data) {
+        dropsession(e, n);
+        return 0;
+    }
+    sessionready(n, scratch);
+    logsession(n, scratch);
+    instrlogstart(n, scratch);
+    memlogstart(n, scratch);
+    return n;
+}
+
+// The handoff's summarizing turn, its finish the summary. A refusal or an
+// output limit left nothing to hand off: reported and the source stopped.
+static void askhandoff(Engine *, Arena, i64, Str sid);
+static void handoffed(Session *s, Arena scratch, Partial *p) {
+    Engine *e = s->e;
+    Str text = trim(summarytext(trim(finish(&p->text))));
+
+    if (p->finish=="refusal" || p->finish=="length") {
+        Buf b(&scratch, 512 + p->refusal.len);
+        print(&b, "The summarizer, ");
+        print(&b, s->model);
+        if (p->finish=="refusal") {
+            print(&b, ", declined to summarize what comes next "
+                  "(stop reason refusal)");
+            if (p->refusal.len) {
+                print(&b, ", ");
+                print(&b, p->refusal);
+            }
+        } else {
+            print(&b, ", stopped at its output limit before it could");
+        }
+        print(&b, " summarize what comes next.");
+        note(s, scratch, "error", finish(&b));
+        // Nothing to hand off: ask the user about what was found or what new
+        // work might be worth taking up.
+        askhandoff(e, scratch, s->handoffid, s->sid);
+        endturn(s, scratch, "handoff", {});
+        return;
+    } else if (!text.len) {
+        Buf b(&scratch, 128);
+        print(&b, "The summarizer left nothing to hand off.");
+        note(s, scratch, "error", finish(&b));
+        askhandoff(e, scratch, s->handoffid, s->sid);
+        endturn(s, scratch, "handoff", {});
+        return;
+    }
+
+    Session *n = newhandoffsess(s, e, scratch);
+    if (!n) {
+        note(s, scratch, "error", "cannot start the handoff: out of memory");
+        reply(e, scratch, s->handoffid, 0, {}, s->sid);
+        endturn(s, scratch, "handoff", {});
+        return;
+    }
+    settitle(n, scratch, concat(&scratch, "handoff of ", s->title), "auto");
+
+    // Fill its input box with the summary, to edit: not sent as a turn. The
+    // reply carries the new session and the summary, matched to this command
+    // by s->handoffid; this turn ends so it does not keep working.
+    Buf   b(&scratch, 256 + text.len);
+    EvOut w = evbegin(&b, n->sid, 0, os_time(e->os), EV_REPLY);
+    putintkey(&w.json, "id", s->handoffid);
+    putintkey(&w.json, "ok", 1);
+    putstrkey(&w.json, "summary", text);
+    putstrkey(&w.json, "sid", n->sid);
+    emit(e, evend(&w));
+
+    endturn(s, scratch, "handoff", {});
+}
+
+// The summarizer left nothing to hand off. Report it and ask the user what it
+// found (unlikely) or what new work might be worth taking up: features, bug
+// fixes or docs. A reply carrying a question; the GUI shows it as an ask on
+// sid, which is idle by now.
+static void askhandoff(Engine *e, Arena scratch, i64 id, Str sid) {
+    Buf   b(&scratch, 512);
+    EvOut w = evbegin(&b, sid.len ? sid : Str{}, 0, os_time(e->os), EV_REPLY);
+    putintkey(&w.json, "id", id);
+    putintkey(&w.json, "ok", 0);
+    putstrkey(&w.json, "question",
+              "The summarizer found nothing to hand off. What did it find, or "
+              "what new work might be worth taking up: a feature to build, a "
+              "bug to fix, or docs to write?");
+    emit(e, evend(&w));
+}
+
+// /handoff: summarize what comes next for a fresh session. A plan handoff
+// copies only the plan into one, in plan mode, with no summarizing turn. No
+// reply here: the summary (or nothing) reaches the GUI once the new session
+// is ready, matched to this command by the id of the request.
+static void cmdhandoff(Engine *e, Session *s, Arena scratch, i64 id, Json *j) {
+    Str focus = trim(jsonstr(jsonget(j, "focus")));
+    if (busy(s) || s->intask) {
+        reply(e, scratch, id, 0, "busy: handoff once the turn ends", s->sid);
+        return;
+    } else if (focus.len > FOCUS_MAX) {
+        reply(e, scratch, id, 0, "the focus is too long: at most 4 KiB", s->sid);
+        return;
+    }
+
+    if (focus.len && focus=="plan") {
+        // A plan handoff: carry the plan into a fresh session, in plan mode so
+        // its approval ask shows when it runs. No turn of its own; the reply
+        // takes the new session with it. The plan is already written, so once
+        // it runs it asks to approve that existing plan (plancall), and only
+        // then does any work.
+        Session *n = newhandoffsess(s, e, scratch);
+        if (!n) {
+            reply(e, scratch, id, 0, "cannot start the handoff: out of memory", s->sid);
+            return;
+        }
+        setmode(n, scratch, MODE_PLAN, "handoff");
+        settitle(n, scratch, concat(&scratch, "handoff of ", s->title), "auto");
+        // Carry the source's existing plan into it, so that fresh session asks
+        // to approve that one rather than writing a new plan. Only if there is
+        // one (readplan leaves .err set when the file is missing or empty).
+        PlanText sp = readplan(s, &scratch);
+        if (!sp.err.data && os_write(e->os, scratch, n->planfile, sp.text)) {
+            note(s, scratch, "info", "carried the plan into the handoff session");
+            // Say a plan is already there so its first turn approves it (via
+            // exit_plan_mode, which asks for approval) instead of writing a new
+            // one over it. This notice reaches it as a message at its first turn.
+            {
+                Buf   b(&scratch, 256);
+                print(&b, "You were handed off with an existing plan in ");
+                print(&b, n->planfile);
+                print(&b, ". Review it, then call exit_plan_mode to ask the "
+                      "user to approve it before you change anything.");
+                notify(n, "plan", finish(&b), 0);
+            }
+        } else if (sp.err.len) {
+            note(s, scratch, "error", sp.err);
+        }
+        Buf b(&scratch, 64);
+        EvOut w = evbegin(&b, n->sid, 0, os_time(e->os), EV_REPLY);
+        putintkey(&w.json, "id", id);
+        putintkey(&w.json, "ok", 1);
+        putstrkey(&w.json, "sid", n->sid);
+        emit(e, evend(&w));
+        return;
+    }
+
+    // Otherwise it is summarized as this turn's finish (sendhandoff). No reply
+    // here: the summary reaches the new session once that turn ends.
+    s->handoffnext = 1;
+    s->handoffid   = id;
+    s->purpose     = REQ_HANDOFF;
+    s->cpfocus     = clone(&s->perm, focus);
+    beginturn(s, scratch, "handoff");
+}
 
 // Steps and turns
 
@@ -13317,6 +13595,10 @@ static void finalize(Session *s, Arena scratch)
     s->slown    = 0;
     if (s->purpose == REQ_COMPACT) {
         compacted(s, scratch, p);
+        return;
+    }
+    if (s->purpose == REQ_HANDOFF) {
+        handoffed(s, scratch, p);
         return;
     }
     if (p->finish == "refusal") {
@@ -21027,6 +21309,7 @@ static void command(Engine *e, Arena scratch, Str line)
         case CMD_TRASHEMPTY:
         case CMD_FORK:
         case CMD_COMPACT:
+        case CMD_HANDOFF:
         case CMD_MODEL:
         case CMD_UPLOAD:
         case CMD_IMPORT:
@@ -21274,6 +21557,9 @@ static void command(Engine *e, Arena scratch, Str line)
     } return;
     case CMD_COMPACT:
         cmdcompact(e, s, scratch, id, j);
+        return;
+    case CMD_HANDOFF:
+        cmdhandoff(e, s, scratch, id, j);
         return;
     case CMD_SKILLS: {
         // What the user may invoke as /name: every skill, theirs too

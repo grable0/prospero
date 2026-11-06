@@ -164,6 +164,7 @@ enum : i32 {
     CMD_GROUP,   // (M8) into a named group, or out of one
     CMD_FORK,    // (M8) a new session from a copy of the log
     CMD_COMPACT, // (M8) compact now
+    CMD_HANDOFF, // (M8) hand off next work to a new top-level session
     CMD_MODEL,   // (M8) another model from here on
     CMD_DRAFT,   // (M8) the frontend's unsent prompt, kept
     CMD_UPLOAD,  // (M9) part of a file staged for import
@@ -205,7 +206,7 @@ static Str cmdnames[] = {
     "", "hello", "list", "new", "open", "close", "prompt", "steer",
     "cancel", "answer", "config.get", "config.set", "quit", "rewind",
     "job.kill", "status", "stop", "file", "rename", "delete", "archive",
-    "group", "fork", "compact", "model", "draft", "upload", "import",
+    "group", "fork", "compact", "handoff", "model", "draft", "upload", "import",
     "skills", "mode",
     "unqueue", "dir", "background", "models", "mcp", "mcp.auth", "mcp.code",
     "mcp.logout", "mcp.restart", "shell", "shells", "git", "trash",
@@ -231,6 +232,7 @@ static Str capnames[] = {
     "group",           // group, and list's group
     "draft",           // draft, and open's draft
     "compact",         // compact, a turn of its own (via "compact")
+    "handoff",         // handoff, a new top-level session carrying the summary forward
     "model",           // model, and the durable model record
     "gauge",           // ctx, compact_at and tokens on attempt, turn.end, live
     "answer.always",   // answer {decision:"always"} for an ask's always

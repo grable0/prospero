@@ -5653,6 +5653,11 @@ static void runslash(Gui *g, GuiSession *s, Slash sl, Str text)
             guicompact(g, s, sl.arg);
         }
         break;
+    case SLASH_HANDOFF:
+        if ((sent = hostcan(h, "handoff"))) {
+            guihandoff(g, s, sl.arg);
+        }
+        break;
     case SLASH_MODEL:
         if (!sl.arg.len) {
             g->pickmodel = s;  // the session bar's model picker

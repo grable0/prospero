@@ -31,6 +31,7 @@ enum : i32 {
     SLASH_PLAN,
     SLASH_SIDE,
     SLASH_WORKTREE,
+    SLASH_HANDOFF,
     SLASH_BACKGROUND,
     SLASH_SHELL,
     SLASH_COUNT,
@@ -54,6 +55,7 @@ static SlashInfo slashinfo[] = {
                             "while its agent works on"},
     {"/worktree", "[NAME]", "Start a worktree session: a copy of this session that works "
                             "in a new worktree, on a branch of its own"},
+    {"/handoff", "[WHAT]", "Summarize what needs to be done next, or narrow it: /handoff plan"},
     {"/background", "",     "Let the running command or subagents go on in the background, and the agent with them"},
     {"/shell",   "[NAME]",  "Switch this session's shell, or pick one from a list"},
 };
@@ -124,6 +126,11 @@ static Slash parseslash(Str text)
         if (r.arg.len) {
             r.err = "/background takes nothing";
         }
+        break;
+    case SLASH_HANDOFF:
+        // Any text after /handoff is accepted as the focus: it narrows what a
+        // fresh session hands off, "plan" being the one that means otherwise.
+        // cmdhandoff checks for "plan"; anything else just focuses the summary.
         break;
     }
     return r;

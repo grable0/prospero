@@ -3884,6 +3884,24 @@ static void guicompact(Gui *g, GuiSession *s, Str focus)
     cmdsend(g, &w, a);
 }
 
+// Summarize what work needs to be done next, and hand it off to a new
+// top-level session carrying everything from this one except its log.
+// The focus narrows the summary (e.g. "plan"); empty means general.
+static void guihandoff(Gui *g, GuiSession *s, Str focus)
+{
+    Arena a = newarena(g->cmdr);
+    Buf   b(&a, 256 + focus.len);
+    EvOut w = cmdopen(g, &b, CMD_HANDOFF, s);
+    if (focus.len) {
+        putkey(&w.json, "focus");
+        putstr(&w.json, focus);
+    }
+    s->cmdid   = g->nextid;
+    s->cmdtext = {};
+    s->note    = {};
+    cmdsend(g, &w, a);
+}
+
 static void guirename(Gui *g, GuiSession *s, Str title)
 {
     Arena a = newarena(g->cmdr);
@@ -5352,6 +5370,37 @@ static void onsesscmd(Gui *g, GuiHost *h, Arena scratch, Request *q, EvRec *r)
         Str say = concat(&scratch, "forked from ", s->sid);
         say     = cwd.len ? concat(&scratch, concat(&scratch, say, " into "), cwd) : say;
         setnote(g, f, say, 0);
+        guilist(g, h);
+    } break;
+    case CMD_HANDOFF: {
+        // {ok, sid:<new>, summary} — a new top-level session carrying everything
+        // from this one except its log. The summary, if any, is in its box to
+        // edit before it runs; a plan handoff leaves it empty for the plan's ask.
+        Str   sid  = jsonstr(jsonget(j, "sid"));
+        Str   summ = jsonstr(jsonget(j, "summary"));
+        Json *qj   = jsonget(j, "question");
+        if (qj && qj->type == JSON_STRING) {
+            // Nothing to hand off: ask what it found or what new work might be
+            // worth taking up. Its summary is empty; the question drives the
+            // next turn instead of a fresh session being started for now.
+            Str note = concat(&scratch, "Ask: ", trim(jsonstr(qj)));
+            GuiSession *f = findsess(g, h, sid);
+            f = f ? f : addsess(g, h, sid);
+            guiselect(g, f);
+            setnote(g, f, note, 1);
+            guilist(g, h);
+        } else if (!validsid(sid) || sid==s->sid) {
+            setnote(g, s, "handoff", 0);
+            guilist(g, h);
+            break;
+        }
+        GuiSession *f = findsess(g, h, sid);
+        f = f ? f : addsess(g, h, sid);
+        guiselect(g, f);
+        if (summ.len) {
+            draftput(g, f, summ);  // in the box, to edit before it runs
+        }
+        setnote(g, f, concat(&scratch, "handoff from ", s->sid), 0);
         guilist(g, h);
     } break;
     }

@@ -118,6 +118,9 @@ static void test_compose(Test *t)
     expect(t, "slash.alone", slashstr(&a, "/"), "text|");
     expect(t, "slash.side", slashstr(&a, "/side"), "/side|");
     expect(t, "slash.sideargs", slashstr(&a, "/side why"), "/side|why|err");
+    expect(t, "slash.handoff", slashstr(&a, "/handoff"), "/handoff|");
+    expect(t, "slash.handoffplan", slashstr(&a, "/handoff plan"), "/handoff|plan");
+    expect(t, "slash.handoffarg", slashstr(&a, "/handoff fix the build now"), "/handoff|fix the build now");
 
     // A side chat's quote of the selection
     expect(t, "side.quote", sidequote(&a, "one\n\ntwo\n"), "> one\n>\n> two\n\n");
@@ -289,7 +292,7 @@ static void test_compose(Test *t)
             putbyte(&b, ' ');
         }
         expect(t, "skill.picks", finish(&b),
-               "/compact /model /rename /fork /export /plan /side /worktree /background /shell /pdf /review ");
+               "/compact /model /rename /fork /export /plan /side /worktree /handoff /background /shell /pdf /review ");
         p = slashpicks(&a, "/pd", sk);  // not /plan
         expect(t, "skill.pick", istr(&a, p.len), "1");
         expect(t, "skill.pickdesc", slashpickinfo(&a, p[0], sk).desc, "Read PDFs");
